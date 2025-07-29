@@ -1,3 +1,9 @@
 .idea
 config.json
+
+# Test config
+config-test.json
+
+# Build artifacts
 monitor
+appmonitor

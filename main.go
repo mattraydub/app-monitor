@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,10 +33,28 @@ type EmailConfig struct {
 	ToEmail   string `json:"to_email"`
 }
 
+type WebhookConfig struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url"`
+	Secret  string `json:"secret,omitempty"`
+}
+
+type WebhookPayload struct {
+	Event        string `json:"event"`
+	Application  string `json:"application"`
+	URL          string `json:"url"`
+	Timestamp    int64  `json:"timestamp"`
+	StatusCode   int    `json:"status_code"`
+	ExpectedCode int    `json:"expected_code"`
+	Error        string `json:"error,omitempty"`
+	FailureCount int    `json:"failure_count"`
+}
+
 type Config struct {
 	CheckInterval string              `json:"check_interval"`
 	Applications  []ApplicationConfig `json:"applications"`
 	Email         EmailConfig         `json:"email"`
+	Webhook       WebhookConfig       `json:"webhook"`
 }
 
 type Monitor struct {
@@ -102,8 +124,29 @@ Please investigate immediately.
 			log.Printf("Failed to send email alert for %s: %v", application.Name, err)
 		} else {
 			log.Printf("Email alert sent for %s after 2 failures", application.Name)
-			m.alertTracker[application.Name] = 3 // Use 3 to indicate alert was sent
 		}
+
+		webhookPayload := WebhookPayload{
+			Event:        "application_down",
+			Application:  application.Name,
+			URL:          application.URL,
+			Timestamp:    time.Now().Unix(),
+			StatusCode:   statusCode,
+			ExpectedCode: application.ExpectedCode,
+			FailureCount: 2,
+		}
+
+		if err != nil {
+			webhookPayload.Error = err.Error()
+		}
+
+		if webhookErr := m.sendWebhook(webhookPayload); webhookErr != nil {
+			log.Printf("Failed to send webhook alert for %s: %v", application.Name, webhookErr)
+		} else if m.config.Webhook.Enabled {
+			log.Printf("Webhook alert sent for %s after 2 failures", application.Name)
+		}
+
+		m.alertTracker[application.Name] = 3 // Use 3 to indicate alert was sent
 	}
 }
 
@@ -133,8 +176,25 @@ Service has recovered and is responding normally.
 		log.Printf("Failed to send recovery email for %s: %v", application.Name, err)
 	} else {
 		log.Printf("Recovery email sent for %s", application.Name)
-		m.alertTracker[application.Name] = 0 // Reset counter on recovery
 	}
+
+	webhookPayload := WebhookPayload{
+		Event:        "application_recovery",
+		Application:  application.Name,
+		URL:          application.URL,
+		Timestamp:    time.Now().Unix(),
+		StatusCode:   200, // Assuming recovery means successful status
+		ExpectedCode: application.ExpectedCode,
+		FailureCount: 0,
+	}
+
+	if webhookErr := m.sendWebhook(webhookPayload); webhookErr != nil {
+		log.Printf("Failed to send webhook recovery notice for %s: %v", application.Name, webhookErr)
+	} else if m.config.Webhook.Enabled {
+		log.Printf("Webhook recovery notice sent for %s", application.Name)
+	}
+
+	m.alertTracker[application.Name] = 0 // Reset counter on recovery
 }
 
 func (m *Monitor) sendEmail(subject, body string) error {
@@ -153,6 +213,48 @@ func (m *Monitor) sendEmail(subject, body string) error {
 
 	return smtp.SendMail(addr, auth, m.config.Email.FromEmail,
 		[]string{m.config.Email.ToEmail}, []byte(msg))
+}
+
+func (m *Monitor) generateWebhookSignature(payload []byte, secret string) string {
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write(payload)
+	return "sha256=" + hex.EncodeToString(h.Sum(nil))
+}
+
+func (m *Monitor) sendWebhook(payload WebhookPayload) error {
+	if !m.config.Webhook.Enabled || m.config.Webhook.URL == "" {
+		return nil
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal webhook payload: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", m.config.Webhook.URL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create webhook request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "AppMonitor/1.0")
+
+	if m.config.Webhook.Secret != "" {
+		signature := m.generateWebhookSignature(jsonData, m.config.Webhook.Secret)
+		req.Header.Set("X-AppMonitor-Signature", signature)
+	}
+
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send webhook: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("webhook request failed with status %d", resp.StatusCode)
+	}
+
+	return nil
 }
 
 func (m *Monitor) checkApplication(application ApplicationConfig) {
@@ -232,6 +334,11 @@ func main() {
 	fmt.Printf("Starting App monitor with %d enabled applications\n", enabledCount)
 	fmt.Printf("Check interval: %v\n", checkInterval)
 	fmt.Printf("Alert email: %s\n", config.Email.ToEmail)
+	if config.Webhook.Enabled {
+		fmt.Printf("Webhook notifications: enabled (%s)\n", config.Webhook.URL)
+	} else {
+		fmt.Println("Webhook notifications: disabled")
+	}
 	fmt.Println("Press Ctrl+C to stop")
 
 	// Initial check
