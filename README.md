@@ -104,12 +104,91 @@ GOOS=freebsd GOARCH=amd64 go build -o monitor main.go
 ### Deploy to remote server
 
 ```bash
-scp monitor host:/srv/app-monitor/monitor
-scp config.json host:/srv/app-monitor/config.json
+scp monitor host:/usr/local/sbin/app-monitor
+ssh host "mkdir -p /usr/local/etc/app-monitor"
+scp config.json host:/usr/local/etc/app-monitor/config.json
 ```
 
-### Run as daemon 
+### Run with rc.d (recommended)
+
+Copy the included rc.d script and enable the service:
 
 ```bash
-daemon -p /var/run/app-monitor.pid -o /var/log/app-monitor.log /srv/app-monitor/monitor /srv/app-monitor/config.json
+sudo cp init/freebsd/app_monitor /usr/local/etc/rc.d/app_monitor
+sudo chmod +x /usr/local/etc/rc.d/app_monitor
+```
+
+Add to `/etc/rc.conf`:
+
+```
+app_monitor_enable="YES"
+```
+
+Optionally override defaults in `/etc/rc.conf`:
+
+```
+app_monitor_config="/usr/local/etc/app-monitor/config.json"
+app_monitor_logfile="/var/log/app-monitor.log"
+```
+
+Manage the service:
+
+```bash
+sudo service app_monitor start
+sudo service app_monitor stop
+sudo service app_monitor restart
+sudo service app_monitor status
+```
+
+### Run as daemon (manual)
+
+```bash
+daemon -p /var/run/app-monitor.pid -o /var/log/app-monitor.log /usr/local/sbin/app-monitor /usr/local/etc/app-monitor/config.json
+```
+
+## Running on Devuan Linux (sysvinit)
+
+Build for Linux:
+
+```bash
+go build -o monitor main.go
+```
+
+Deploy the binary and config:
+
+```bash
+sudo cp monitor /usr/local/sbin/app-monitor
+sudo chmod +x /usr/local/sbin/app-monitor
+sudo mkdir -p /etc/app-monitor
+sudo cp config.json /etc/app-monitor/config.json
+```
+
+Install the init script:
+
+```bash
+sudo cp init/devuan/app-monitor /etc/init.d/app-monitor
+sudo chmod +x /etc/init.d/app-monitor
+```
+
+Enable the service to start at boot:
+
+```bash
+sudo update-rc.d app-monitor defaults
+```
+
+Manage the service:
+
+```bash
+sudo service app-monitor start
+sudo service app-monitor stop
+sudo service app-monitor restart
+sudo service app-monitor status
+```
+
+Logs are written to `/var/log/app-monitor.log`.
+
+To disable autostart:
+
+```bash
+sudo update-rc.d app-monitor disable
 ```

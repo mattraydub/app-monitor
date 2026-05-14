@@ -1,0 +1,23 @@
+#!/bin/sh
+
+# PROVIDE: app_monitor
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="app_monitor"
+rcvar="app_monitor_enable"
+
+load_rc_config $name
+
+: ${app_monitor_enable:="NO"}
+: ${app_monitor_config:="/usr/local/etc/app-monitor/config.json"}
+: ${app_monitor_logfile:="/var/log/app-monitor.log"}
+: ${app_monitor_pidfile:="/var/run/app-monitor.pid"}
+
+command="/usr/sbin/daemon"
+command_args="-p ${app_monitor_pidfile} -o ${app_monitor_logfile} /usr/local/sbin/app-monitor ${app_monitor_config}"
+pidfile="${app_monitor_pidfile}"
+
+run_rc_command "$1"
